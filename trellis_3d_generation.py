@@ -12,6 +12,19 @@ U2NET_CACHE_DIR = "/root/.u2net"
 MODEL_NAME = "JeffreyXiang/TRELLIS-image-large"
 MODEL_REVISION = "25e0d31ffbebe4b5a97464dd851910efc3002d96"
 
+hf_cache_volume = modal.Volume.from_name(
+    "hf-hub-cache", create_if_missing=True)
+torch_cache_volume = modal.Volume.from_name(
+    "torch-cache", create_if_missing=True)
+u2net_cache_volume = modal.Volume.from_name(
+    "u2net-cache", create_if_missing=True)
+
+all_volumes = {
+    HF_CACHE_DIR: hf_cache_volume,
+    TORCH_CACHE_DIR: torch_cache_volume,
+    U2NET_CACHE_DIR: u2net_cache_volume,
+}
+
 # Define the Modal app
 app = modal.App(
     name="trellis-3d-generation",
@@ -19,6 +32,37 @@ app = modal.App(
         modal.Secret.from_name("huggingface_token")
     ],
 )
+
+def build_function():
+    print("Running build function")
+    
+    import os
+    # Can be 'flash-attn' or 'xformers', default is 'flash-attn'
+    # os.environ['ATTN_BACKEND'] = 'xformers'
+    # Can be 'native' or 'auto', default is 'auto'.
+    # os.environ['SPCONV_ALGO'] = 'native'
+    # 'auto' is faster but will do benchmarking at the beginning.
+    # Recommended to set to 'native' if run only once.
+
+    import base64
+
+    import imageio
+    from PIL import Image
+    from trellis.pipelines import TrellisImageTo3DPipeline
+    from trellis.utils import render_utils, postprocessing_utils
+    
+    pipeline = TrellisImageTo3DPipeline.from_pretrained(
+            "JeffreyXiang/TRELLIS-image-large")
+    pipeline.cuda()
+    
+    image = Image.open("assets/example_image/typical_building_building.png")
+    
+    outputs = pipeline.run(
+            image,
+            seed=42,
+        )
+    
+    print("Build function completed")
 
 # Define Modal image for the app
 image = (
@@ -59,17 +103,19 @@ image = (
     .run_commands("ls -la /usr/local")
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_HUB_CACHE": HF_CACHE_DIR})
     .pip_install("Pillow", "aiohttp")
+    .run_function(build_function, volumes=all_volumes, gpu=modal.gpu.L4())
 )
 
 # These dependencies are only installed remotely, so we can't import them locally.
 # Use the `.imports` context manager to import them only on Modal instead.
 
 with image.imports():
+    print("Importing dependencies")
     import os
     # Can be 'flash-attn' or 'xformers', default is 'flash-attn'
     # os.environ['ATTN_BACKEND'] = 'xformers'
     # Can be 'native' or 'auto', default is 'auto'.
-    os.environ['SPCONV_ALGO'] = 'auto'
+    # os.environ['SPCONV_ALGO'] = 'native'
     # 'auto' is faster but will do benchmarking at the beginning.
     # Recommended to set to 'native' if run only once.
 
@@ -79,14 +125,7 @@ with image.imports():
     from PIL import Image
     from trellis.pipelines import TrellisImageTo3DPipeline
     from trellis.utils import render_utils, postprocessing_utils
-
-hf_cache_volume = modal.Volume.from_name(
-    "hf-hub-cache", create_if_missing=True)
-torch_cache_volume = modal.Volume.from_name(
-    "torch-cache", create_if_missing=True)
-u2net_cache_volume = modal.Volume.from_name(
-    "u2net-cache", create_if_missing=True)
-
+    print("Dependencies imported")
 
 @app.function(
     image=image, volumes={HF_CACHE_DIR: hf_cache_volume}, timeout=20 * MINUTES
@@ -103,11 +142,7 @@ def download_model():
 
 
 @app.cls(image=image, gpu=modal.gpu.L4(), container_idle_timeout=60,
-         volumes={
-    HF_CACHE_DIR: hf_cache_volume,
-    TORCH_CACHE_DIR: torch_cache_volume,
-    U2NET_CACHE_DIR: u2net_cache_volume,
-})
+         volumes=all_volumes)
 class Model:
     @modal.enter()
     def load_models(self):
@@ -259,3 +294,7 @@ def main():
     if "mesh_video" in result:
         with open(f".cache/TRELLIS/sample_mesh.mp4", "wb") as f:
             f.write(base64.b64decode(result["mesh_video"]))
+
+if __name__ == "__main__":
+    print("Running __main__")
+    main()
