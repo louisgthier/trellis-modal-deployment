@@ -29,7 +29,7 @@ all_volumes = {
 app = modal.App(
     name="trellis-3d-generation",
     secrets=[
-        modal.Secret.from_name("huggingface_token")
+        modal.Secret.from_name("huggingface-secret")
     ],
 )
 
